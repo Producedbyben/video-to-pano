@@ -542,6 +542,50 @@
       }
     }
 
+    function lockEndpointEdge(accum, srcData, srcW, srcH, srcX, stripW, dstX, dstY, side) {
+      for (let y = 0; y < srcH; y++) {
+        const dy = dstY + y;
+        if (dy < 0 || dy >= accum.height) continue;
+        for (let k = 0; k < stripW; k++) {
+          const sx = srcX + k;
+          const dx = dstX + k;
+          if (sx < 0 || sx >= srcW || dx < 0 || dx >= accum.width) continue;
+
+          const sIdx = (y * srcW + sx) * 4;
+          const pIdx = (dy * accum.width + dx);
+
+          const r = srcData[sIdx];
+          const g = srcData[sIdx + 1];
+          const b = srcData[sIdx + 2];
+          const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+          const t = stripW <= 1 ? 1 : (k / (stripW - 1));
+          const edgeT = side === 'left' ? (1 - t) : t;
+          const lock = Math.pow(edgeT, 1.6);
+          if (lock < 0.08) continue;
+
+          const w = accum.weight[pIdx];
+          const prevR = w > 1e-6 ? (accum.r[pIdx] / w) : r;
+          const prevG = w > 1e-6 ? (accum.g[pIdx] / w) : g;
+          const prevB = w > 1e-6 ? (accum.b[pIdx] / w) : b;
+
+          const mix = clamp(0.15 + lock * 0.85, 0.15, 1);
+          const outR = prevR * (1 - mix) + r * mix;
+          const outG = prevG * (1 - mix) + g * mix;
+          const outB = prevB * (1 - mix) + b * mix;
+          const outLum = 0.2126 * outR + 0.7152 * outG + 0.0722 * outB;
+
+          const keepW = Math.max(w, 1);
+          accum.r[pIdx] = outR * keepW;
+          accum.g[pIdx] = outG * keepW;
+          accum.b[pIdx] = outB * keepW;
+          accum.lum[pIdx] = outLum * keepW;
+          accum.lum2[pIdx] = outLum * outLum * keepW;
+          accum.weight[pIdx] = keepW;
+        }
+      }
+    }
+
     videoInput.addEventListener('change', async () => {
       downloadBtn.disabled = true;
       buildBtn.disabled = true;
@@ -772,10 +816,15 @@
         // Reinforce outer edges with wider endpoint strips to reduce visible ghosting at panorama ends.
         const endpointStripW = Math.round(clamp(Math.max(stripW * 2.2, vw * 0.22), stripW, vw * 0.65));
         const endpointBoost = 1.1;
-        for (const idx of [0, framePackets.length - 1]) {
+        const endpointPlans = [
+          { idx: 0, side: 'left' },
+          { idx: framePackets.length - 1, side: 'right' }
+        ];
+
+        for (const plan of endpointPlans) {
           if (token !== buildToken) throw new Error('Canceled');
-          const p = framePackets[idx];
-          const narrowSrc = stripSourceXs[idx];
+          const p = framePackets[plan.idx];
+          const narrowSrc = stripSourceXs[plan.idx];
           const srcX = narrowSrc <= 0 ? 0 : (narrowSrc >= (vw - stripW) ? (vw - endpointStripW) : clamp(narrowSrc - Math.round((endpointStripW - stripW) / 2), 0, vw - endpointStripW));
           const dstX = Math.round((p.x + srcX) - panoLeftX);
           const dstY = Math.round(p.y - panoTopY);
@@ -792,6 +841,7 @@
             clamp(antiGhostStrength + 20, 0, 100),
             clamp(p.confidence * endpointBoost, 0.05, 1.15)
           );
+          lockEndpointEdge(accum, p.rgba, vw, vh, srcX, endpointStripW, dstX, dstY, plan.side);
         }
 
         const pano = new ImageData(panoW, panoH);
@@ -817,7 +867,7 @@
           ['Max horizontal shift / frame', `${maxShiftX}px`],
           ['Strip width', `${stripW}px`],
           ['Strip sweep', 'Edge-to-edge (dynamic)'],
-          ['Endpoint reinforcement', 'Wider first/last strips'],
+          ['Endpoint reinforcement', 'Wider strips + edge locking'],
           ['Average horizontal shift / frame', `${shiftAbsAvg.toFixed(2)} px`],
           ['Average vertical shift / frame', `${verticalShiftAbsAvg.toFixed(2)} px`],
           ['Panorama resolution', `<strong>${panoW} × ${panoH}</strong>`],

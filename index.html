@@ -682,7 +682,6 @@
         const maxShiftX = tuned.maxShift;
         const maxShiftY = Math.floor(clamp(vh * 0.26, 10, 380));
         const stripW = tuned.stripW;
-        const sourceX = Math.floor((vw - stripW) / 2);
 
         const framePackets = [];
         let cumulativeX = 0;
@@ -713,16 +712,22 @@
           setStatus(`Refining shifts... frame ${i + 1}/${firstPassFrames.length}`);
         }
 
-        const xs = framePackets.map(f => f.x);
         const ys = framePackets.map(f => f.y);
-        const minStripX = Math.min(...xs);
-        const maxStripX = Math.max(...xs) + stripW;
         const minFrameY = Math.min(...ys);
         const maxFrameY = Math.max(...ys) + vh;
 
-        // Use only stitched-coverage bounds in X to avoid empty black side columns.
-        const panoLeftX = minStripX;
-        const panoRightX = maxStripX;
+        const maxStripSourceX = Math.max(0, vw - stripW);
+        const stripSourceXs = framePackets.map((_, i) => {
+          const t = framePackets.length <= 1 ? 0 : (i / (framePackets.length - 1));
+          const edgeT = direction === 'rtl' ? (1 - t) : t;
+          return Math.round(edgeT * maxStripSourceX);
+        });
+
+        const stripWorldLefts = framePackets.map((f, i) => f.x + stripSourceXs[i]);
+        const stripWorldRights = framePackets.map((f, i) => f.x + stripSourceXs[i] + stripW);
+
+        const panoLeftX = Math.min(...stripWorldLefts);
+        const panoRightX = Math.max(...stripWorldRights);
         const panoTopY = Math.floor(minFrameY);
         const panoBottomY = Math.ceil(maxFrameY);
 
@@ -743,14 +748,15 @@
         for (let i = 0; i < framePackets.length; i++) {
           if (token !== buildToken) throw new Error('Canceled');
           const p = framePackets[i];
-          const dstX = Math.round(p.x - panoLeftX);
+          const srcStripX = stripSourceXs[i];
+          const dstX = Math.round((p.x + srcStripX) - panoLeftX);
           const dstY = Math.round(p.y - panoTopY);
           weightedCopyStripAntiGhost(
             p.rgba,
             vw,
             vh,
             accum,
-            sourceX,
+            srcStripX,
             stripW,
             dstX,
             dstY,
@@ -785,6 +791,7 @@
           ['Tuning mode', tuned.mode === 'auto' ? 'Auto' : 'Manual'],
           ['Max horizontal shift / frame', `${maxShiftX}px`],
           ['Strip width', `${stripW}px`],
+          ['Strip sweep', 'Edge-to-edge (dynamic)'],
           ['Average horizontal shift / frame', `${shiftAbsAvg.toFixed(2)} px`],
           ['Average vertical shift / frame', `${verticalShiftAbsAvg.toFixed(2)} px`],
           ['Panorama resolution', `<strong>${panoW} × ${panoH}</strong>`],

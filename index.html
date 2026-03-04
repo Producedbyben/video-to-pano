@@ -214,14 +214,14 @@
 
         <label>
           Blend strength
-          <input id="blendStrength" type="number" min="10" max="80" step="5" value="35" />
-          <div class="hint">Higher = smoother seams.</div>
+          <input id="blendStrength" type="number" min="10" max="100" step="5" value="60" />
+          <div class="hint">Higher = wider/adaptive seam feathering.</div>
         </label>
 
         <label>
           Anti-ghosting strength
           <input id="antiGhost" type="number" min="0" max="100" step="5" value="55" />
-          <div class="hint">Higher = suppress moving-object doubles.</div>
+          <div class="hint">Higher = adaptive outlier rejection + ghost suppression.</div>
         </label>
       </div>
 
@@ -439,8 +439,10 @@
     }
 
     function weightedCopyStripAntiGhost(srcData, srcW, srcH, accum, srcX, stripW, dstX, blendStrength, antiGhostStrength, frameConfidence) {
-      const fade = Math.max(1, Math.floor(stripW * (blendStrength / 100)));
-      const ghostThreshold = 8 + (1 - antiGhostStrength / 100) * 42;
+      const blendN = blendStrength / 100;
+      const antiN = antiGhostStrength / 100;
+      const fade = Math.max(1, Math.floor(stripW * (0.08 + 0.42 * blendN)));
+      const ghostBaseThreshold = 6 + (1 - antiN) * 40;
 
       for (let y = 0; y < srcH; y++) {
         for (let k = 0; k < stripW; k++) {
@@ -451,7 +453,7 @@
           let seamW = 1;
           if (k < fade) seamW *= k / fade;
           if (k >= stripW - fade) seamW *= (stripW - 1 - k) / fade;
-          seamW = clamp(seamW, 0.12, 1);
+          seamW = clamp(seamW, 0.08, 1);
 
           const sIdx = (y * srcW + sx) * 4;
           const pIdx = (y * accum.width + dx);
@@ -463,20 +465,44 @@
 
           const existingW = accum.weight[pIdx];
           let gate = 1;
+
           if (existingW > 0 && antiGhostStrength > 0) {
-            const existingLum = accum.lum[pIdx] / existingW;
-            const lumDelta = Math.abs(lum - existingLum);
-            if (lumDelta > ghostThreshold) {
-              const over = (lumDelta - ghostThreshold) / (255 - ghostThreshold + 1e-6);
-              gate = 1 - over * (antiGhostStrength / 100);
+            const meanR = accum.r[pIdx] / existingW;
+            const meanG = accum.g[pIdx] / existingW;
+            const meanB = accum.b[pIdx] / existingW;
+            const meanLum = accum.lum[pIdx] / existingW;
+            const varLum = Math.max(0, accum.lum2[pIdx] / existingW - meanLum * meanLum);
+            const lumStd = Math.sqrt(varLum);
+
+            const lumDelta = Math.abs(lum - meanLum);
+            const colorDelta = Math.sqrt(
+              (r - meanR) * (r - meanR) +
+              (g - meanG) * (g - meanG) +
+              (b - meanB) * (b - meanB)
+            ) / 1.732;
+            const compositeDelta = 0.55 * lumDelta + 0.45 * colorDelta;
+
+            const adaptiveThreshold = ghostBaseThreshold + lumStd * 1.25 + (1 - frameConfidence) * 18;
+
+            if (compositeDelta > adaptiveThreshold) {
+              const over = (compositeDelta - adaptiveThreshold) / (255 - adaptiveThreshold + 1e-6);
+              const suppress = over * (0.35 + 0.65 * antiN);
+              gate *= (1 - suppress);
+            } else if (compositeDelta < adaptiveThreshold * 0.5) {
+              gate *= 1 + 0.15 * antiN;
+            }
+
+            if (antiN > 0.85 && compositeDelta > adaptiveThreshold * 2.2) {
+              gate = Math.min(gate, 0.015);
             }
           }
 
-          const w = seamW * frameConfidence * clamp(gate, 0.05, 1);
+          const w = seamW * frameConfidence * clamp(gate, 0.005, 1.15);
           accum.r[pIdx] += r * w;
           accum.g[pIdx] += g * w;
           accum.b[pIdx] += b * w;
           accum.lum[pIdx] += lum * w;
+          accum.lum2[pIdx] += lum * lum * w;
           accum.weight[pIdx] += w;
         }
       }
@@ -563,7 +589,7 @@
         const sampleFps = clamp(Number(sampleFpsInput.value) || 6, 0.5, 30);
         const manualMaxShift = Math.floor(clamp(Number(maxShiftInput.value) || 240, 10, 800));
         const manualStripPct = clamp(Number(stripPctInput.value) || 10, 2, 35) / 100;
-        const blendStrength = clamp(Number(blendStrengthInput.value) || 35, 10, 80);
+        const blendStrength = clamp(Number(blendStrengthInput.value) || 60, 10, 100);
         const antiGhostStrength = clamp(Number(antiGhostInput.value) || 55, 0, 100);
         const userDirection = directionModeInput.value;
         const autoTuneEnabled = autoTuneInput.value === 'on';
@@ -665,6 +691,7 @@
           g: new Float32Array(panoW * panoH),
           b: new Float32Array(panoW * panoH),
           lum: new Float32Array(panoW * panoH),
+          lum2: new Float32Array(panoW * panoH),
           weight: new Float32Array(panoW * panoH)
         };
 

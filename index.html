@@ -769,6 +769,31 @@
           setStatus(`Blending panorama... frame ${i + 1}/${framePackets.length}`);
         }
 
+        // Reinforce outer edges with wider endpoint strips to reduce visible ghosting at panorama ends.
+        const endpointStripW = Math.round(clamp(Math.max(stripW * 2.2, vw * 0.22), stripW, vw * 0.65));
+        const endpointBoost = 1.1;
+        for (const idx of [0, framePackets.length - 1]) {
+          if (token !== buildToken) throw new Error('Canceled');
+          const p = framePackets[idx];
+          const narrowSrc = stripSourceXs[idx];
+          const srcX = narrowSrc <= 0 ? 0 : (narrowSrc >= (vw - stripW) ? (vw - endpointStripW) : clamp(narrowSrc - Math.round((endpointStripW - stripW) / 2), 0, vw - endpointStripW));
+          const dstX = Math.round((p.x + srcX) - panoLeftX);
+          const dstY = Math.round(p.y - panoTopY);
+          weightedCopyStripAntiGhost(
+            p.rgba,
+            vw,
+            vh,
+            accum,
+            srcX,
+            endpointStripW,
+            dstX,
+            dstY,
+            clamp(blendStrength + 12, 10, 100),
+            clamp(antiGhostStrength + 20, 0, 100),
+            clamp(p.confidence * endpointBoost, 0.05, 1.15)
+          );
+        }
+
         const pano = new ImageData(panoW, panoH);
         renderAccumulationToImageData(accum, pano);
 
@@ -792,6 +817,7 @@
           ['Max horizontal shift / frame', `${maxShiftX}px`],
           ['Strip width', `${stripW}px`],
           ['Strip sweep', 'Edge-to-edge (dynamic)'],
+          ['Endpoint reinforcement', 'Wider first/last strips'],
           ['Average horizontal shift / frame', `${shiftAbsAvg.toFixed(2)} px`],
           ['Average vertical shift / frame', `${verticalShiftAbsAvg.toFixed(2)} px`],
           ['Panorama resolution', `<strong>${panoW} × ${panoH}</strong>`],

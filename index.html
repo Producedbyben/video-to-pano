@@ -717,13 +717,12 @@
         const ys = framePackets.map(f => f.y);
         const minStripX = Math.min(...xs);
         const maxStripX = Math.max(...xs) + stripW;
-        const minFrameLeftX = Math.min(...framePackets.map(f => f.x - sourceX));
-        const maxFrameRightX = Math.max(...framePackets.map(f => f.x - sourceX + vw));
         const minFrameY = Math.min(...ys);
         const maxFrameY = Math.max(...ys) + vh;
 
-        const panoLeftX = Math.min(minStripX, minFrameLeftX);
-        const panoRightX = Math.max(maxStripX, maxFrameRightX);
+        // Use only stitched-coverage bounds in X to avoid empty black side columns.
+        const panoLeftX = minStripX;
+        const panoRightX = maxStripX;
         const panoTopY = Math.floor(minFrameY);
         const panoBottomY = Math.ceil(maxFrameY);
 

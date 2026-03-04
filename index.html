@@ -327,6 +327,18 @@
       return out;
     }
 
+    function computeVerticalGradientProjection(gray, width, height, x0, x1) {
+      const out = new Float32Array(height);
+      for (let y = 1; y < height; y++) {
+        const row = y * width;
+        const prevRow = (y - 1) * width;
+        for (let x = x0; x < x1; x++) {
+          out[y] += Math.abs(gray[row + x] - gray[prevRow + x]);
+        }
+      }
+      return out;
+    }
+
     function estimateShiftByNCC(profileA, profileB, maxShift) {
       const n = profileA.length;
       let bestShift = 0;
@@ -438,13 +450,15 @@
       };
     }
 
-    function weightedCopyStripAntiGhost(srcData, srcW, srcH, accum, srcX, stripW, dstX, blendStrength, antiGhostStrength, frameConfidence) {
+    function weightedCopyStripAntiGhost(srcData, srcW, srcH, accum, srcX, stripW, dstX, dstY, blendStrength, antiGhostStrength, frameConfidence) {
       const blendN = blendStrength / 100;
       const antiN = antiGhostStrength / 100;
       const fade = Math.max(1, Math.floor(stripW * (0.08 + 0.42 * blendN)));
       const ghostBaseThreshold = 6 + (1 - antiN) * 40;
 
       for (let y = 0; y < srcH; y++) {
+        const dy = dstY + y;
+        if (dy < 0 || dy >= accum.height) continue;
         for (let k = 0; k < stripW; k++) {
           const sx = srcX + k;
           const dx = dstX + k;
@@ -456,7 +470,7 @@
           seamW = clamp(seamW, 0.08, 1);
 
           const sIdx = (y * srcW + sx) * 4;
-          const pIdx = (y * accum.width + dx);
+          const pIdx = (dy * accum.width + dx);
 
           const r = srcData[sIdx];
           const g = srcData[sIdx + 1];
@@ -518,7 +532,7 @@
           dst[d] = 0;
           dst[d + 1] = 0;
           dst[d + 2] = 0;
-          dst[d + 3] = 0;
+          dst[d + 3] = 255;
           continue;
         }
         dst[d] = clamp(accum.r[i] / w, 0, 255);
@@ -528,15 +542,17 @@
       }
     }
 
-    function stampEndpointFrame(srcData, srcW, srcH, accum, dstFrameX, preferLeft) {
+    function stampEndpointFrame(srcData, srcW, srcH, accum, dstFrameX, dstFrameY, preferLeft) {
       const boost = 1.75;
       for (let y = 0; y < srcH; y++) {
+        const dy = dstFrameY + y;
+        if (dy < 0 || dy >= accum.height) continue;
         for (let x = 0; x < srcW; x++) {
           const dx = dstFrameX + x;
           if (dx < 0 || dx >= accum.width) continue;
 
           const sIdx = (y * srcW + x) * 4;
-          const pIdx = (y * accum.width + dx);
+          const pIdx = (dy * accum.width + dx);
 
           const r = srcData[sIdx];
           const g = srcData[sIdx + 1];
@@ -637,12 +653,17 @@
 
         const bandTop = Math.floor(vh * 0.25);
         const bandBottom = Math.floor(vh * 0.75);
+        const colLeft = Math.floor(vw * 0.25);
+        const colRight = Math.floor(vw * 0.75);
 
         const firstPassFrames = [];
-        let prevProfile = null;
-        const firstPassShifts = [];
+        let prevProfileX = null;
+        let prevProfileY = null;
+        const firstPassShiftsX = [];
+        const firstPassShiftsY = [];
 
-        const coarseMaxShift = Math.floor(clamp(vw * 0.35, 16, 900));
+        const coarseMaxShiftX = Math.floor(clamp(vw * 0.35, 16, 900));
+        const coarseMaxShiftY = Math.floor(clamp(vh * 0.22, 8, 320));
 
         for (let i = 0; i < times.length; i++) {
           if (token !== buildToken) throw new Error('Canceled');
@@ -650,55 +671,71 @@
           workCtx.drawImage(workVideo, 0, 0, vw, vh);
           const img = workCtx.getImageData(0, 0, vw, vh);
           const gray = rgbaToGray(img.data);
-          const profile = computeGradientProjection(gray, vw, bandTop, bandBottom);
+          const profileX = computeGradientProjection(gray, vw, bandTop, bandBottom);
+          const profileY = computeVerticalGradientProjection(gray, vw, vh, colLeft, colRight);
 
           let confidence = 1;
-          let shift = 0;
-          if (prevProfile) {
-            const estimate = estimateShiftByNCC(prevProfile, profile, coarseMaxShift);
-            shift = estimate.shift;
-            confidence = clamp((estimate.score + 1) / 2, 0, 1);
-            firstPassShifts.push(shift);
+          let shiftX = 0;
+          let shiftY = 0;
+          if (prevProfileX && prevProfileY) {
+            const estimateX = estimateShiftByNCC(prevProfileX, profileX, coarseMaxShiftX);
+            const estimateY = estimateShiftByNCC(prevProfileY, profileY, coarseMaxShiftY);
+            shiftX = estimateX.shift;
+            shiftY = estimateY.shift;
+            confidence = clamp(((estimateX.score + estimateY.score) * 0.5 + 1) / 2, 0, 1);
+            firstPassShiftsX.push(shiftX);
+            firstPassShiftsY.push(shiftY);
           }
 
           firstPassFrames.push({
             rgba: new Uint8ClampedArray(img.data),
             t: times[i],
-            profile,
-            shift,
+            profileX,
+            profileY,
+            shiftX,
+            shiftY,
             confidence
           });
 
-          prevProfile = profile;
+          prevProfileX = profileX;
+          prevProfileY = profileY;
           progressEl.value = (i + 1) / times.length * 35;
           setStatus(`Analyzing motion... frame ${i + 1}/${times.length}`);
         }
 
-        const direction = resolveDirectionMode(userDirection, firstPassShifts);
-        const directionalShifts = firstPassShifts.map(s => enforceDirection(s, direction));
-        const filteredShifts = smoothShifts(directionalShifts);
-        const absShifts = filteredShifts.map(s => Math.abs(s));
+        const direction = resolveDirectionMode(userDirection, firstPassShiftsX);
+        const directionalShiftsX = firstPassShiftsX.map(s => enforceDirection(s, direction));
+        const filteredShiftsX = smoothShifts(directionalShiftsX);
+        const filteredShiftsY = smoothShifts(firstPassShiftsY);
+        const absShifts = filteredShiftsX.map(s => Math.abs(s));
 
         const tuned = computeAutoParams(vw, absShifts, manualStripPct, manualMaxShift, autoTuneEnabled);
-        const maxShift = tuned.maxShift;
+        const maxShiftX = tuned.maxShift;
+        const maxShiftY = Math.floor(clamp(vh * 0.26, 10, 380));
         const stripW = tuned.stripW;
         const sourceX = Math.floor((vw - stripW) / 2);
 
         const framePackets = [];
         let cumulativeX = 0;
-        framePackets.push({ rgba: firstPassFrames[0].rgba, x: 0, t: firstPassFrames[0].t, confidence: 1 });
+        let cumulativeY = 0;
+        framePackets.push({ rgba: firstPassFrames[0].rgba, x: 0, y: 0, t: firstPassFrames[0].t, confidence: 1 });
 
         for (let i = 1; i < firstPassFrames.length; i++) {
-          const baseShift = filteredShifts[i - 1];
-          const score = estimateShiftByNCC(firstPassFrames[i - 1].profile, firstPassFrames[i].profile, maxShift);
-          const clampedShift = enforceDirection(score.shift, direction);
-          const chosenShift = Math.abs(baseShift) > 0 ? baseShift : clampedShift;
-          cumulativeX -= chosenShift;
+          const baseShiftX = filteredShiftsX[i - 1];
+          const baseShiftY = filteredShiftsY[i - 1] || 0;
+          const scoreX = estimateShiftByNCC(firstPassFrames[i - 1].profileX, firstPassFrames[i].profileX, maxShiftX);
+          const scoreY = estimateShiftByNCC(firstPassFrames[i - 1].profileY, firstPassFrames[i].profileY, maxShiftY);
+          const clampedShiftX = enforceDirection(scoreX.shift, direction);
+          const chosenShiftX = Math.abs(baseShiftX) > 0 ? baseShiftX : clampedShiftX;
+          const chosenShiftY = Math.abs(baseShiftY) > 0 ? baseShiftY : scoreY.shift;
+          cumulativeX -= chosenShiftX;
+          cumulativeY -= chosenShiftY;
 
-          const confidence = clamp((score.score + 1) / 2, 0.05, 1);
+          const confidence = clamp(((scoreX.score + scoreY.score) * 0.5 + 1) / 2, 0.05, 1);
           framePackets.push({
             rgba: firstPassFrames[i].rgba,
             x: cumulativeX,
+            y: cumulativeY,
             t: firstPassFrames[i].t,
             confidence
           });
@@ -708,17 +745,22 @@
         }
 
         const xs = framePackets.map(f => f.x);
+        const ys = framePackets.map(f => f.y);
         const minStripX = Math.min(...xs);
         const maxStripX = Math.max(...xs) + stripW;
+        const minFrameY = Math.min(...ys);
+        const maxFrameY = Math.max(...ys) + vh;
 
         const firstFrameLeftX = framePackets[0].x - sourceX;
         const lastFrameRightX = framePackets[framePackets.length - 1].x - sourceX + vw;
 
         const panoLeftX = Math.min(minStripX, firstFrameLeftX);
         const panoRightX = Math.max(maxStripX, lastFrameRightX);
+        const panoTopY = Math.floor(minFrameY);
+        const panoBottomY = Math.ceil(maxFrameY);
 
         const panoW = Math.max(16, Math.ceil((panoRightX - panoLeftX) + 4));
-        const panoH = vh;
+        const panoH = Math.max(16, Math.ceil((panoBottomY - panoTopY) + 4));
 
         const accum = {
           width: panoW,
@@ -735,6 +777,7 @@
           if (token !== buildToken) throw new Error('Canceled');
           const p = framePackets[i];
           const dstX = Math.round(p.x - panoLeftX);
+          const dstY = Math.round(p.y - panoTopY);
           weightedCopyStripAntiGhost(
             p.rgba,
             vw,
@@ -743,6 +786,7 @@
             sourceX,
             stripW,
             dstX,
+            dstY,
             blendStrength,
             antiGhostStrength,
             p.confidence
@@ -753,9 +797,11 @@
         }
 
         const firstFrameDstX = Math.round(framePackets[0].x - panoLeftX - sourceX);
+        const firstFrameDstY = Math.round(framePackets[0].y - panoTopY);
         const lastFrameDstX = Math.round(framePackets[framePackets.length - 1].x - panoLeftX - sourceX);
-        stampEndpointFrame(framePackets[0].rgba, vw, vh, accum, firstFrameDstX, true);
-        stampEndpointFrame(framePackets[framePackets.length - 1].rgba, vw, vh, accum, lastFrameDstX, false);
+        const lastFrameDstY = Math.round(framePackets[framePackets.length - 1].y - panoTopY);
+        stampEndpointFrame(framePackets[0].rgba, vw, vh, accum, firstFrameDstX, firstFrameDstY, true);
+        stampEndpointFrame(framePackets[framePackets.length - 1].rgba, vw, vh, accum, lastFrameDstX, lastFrameDstY, false);
 
         const pano = new ImageData(panoW, panoH);
         renderAccumulationToImageData(accum, pano);
@@ -767,8 +813,9 @@
         latestPanoramaBlob = await new Promise(resolve => previewCanvas.toBlob(resolve, 'image/png'));
         if (!latestPanoramaBlob) throw new Error('Failed to encode panorama PNG.');
 
-        const nonZero = filteredShifts.filter(v => Math.abs(v) > 0.1);
+        const nonZero = filteredShiftsX.filter(v => Math.abs(v) > 0.1);
         const shiftAbsAvg = nonZero.reduce((a, b) => a + Math.abs(b), 0) / Math.max(1, nonZero.length);
+        const verticalShiftAbsAvg = filteredShiftsY.reduce((a, b) => a + Math.abs(b), 0) / Math.max(1, filteredShiftsY.length);
 
         setStats([
           ['Input file', `<code>${loadedFile.name}</code>`],
@@ -776,9 +823,10 @@
           ['Sampled frames', `${framePackets.length} (@ ${sampleFps.toFixed(1)} fps)`],
           ['Direction mode', `${userDirection === 'auto' ? `Auto (${direction === 'ltr' ? 'Left ➜ Right' : 'Right ➜ Left'})` : (direction === 'ltr' ? 'Left ➜ Right' : 'Right ➜ Left')}`],
           ['Tuning mode', tuned.mode === 'auto' ? 'Auto' : 'Manual'],
-          ['Max shift / frame', `${maxShift}px`],
+          ['Max horizontal shift / frame', `${maxShiftX}px`],
           ['Strip width', `${stripW}px`],
-          ['Average shift / frame', `${shiftAbsAvg.toFixed(2)} px`],
+          ['Average horizontal shift / frame', `${shiftAbsAvg.toFixed(2)} px`],
+          ['Average vertical shift / frame', `${verticalShiftAbsAvg.toFixed(2)} px`],
           ['Panorama resolution', `<strong>${panoW} × ${panoH}</strong>`],
           ['PNG size', `${(latestPanoramaBlob.size / (1024 * 1024)).toFixed(2)} MB`]
         ]);

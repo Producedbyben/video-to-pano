@@ -387,9 +387,15 @@
       return arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2;
     }
 
+    function expectedShiftSign(directionMode) {
+      if (directionMode === 'ltr') return -1;
+      if (directionMode === 'rtl') return 1;
+      return 0;
+    }
+
     function enforceDirection(shift, directionMode) {
       if (directionMode === 'auto') return shift;
-      const sign = directionMode === 'ltr' ? 1 : -1;
+      const sign = expectedShiftSign(directionMode);
       if (Math.sign(shift) !== sign) return 0;
       return shift;
     }
@@ -407,7 +413,7 @@
     function resolveDirectionMode(userDirection, shifts) {
       if (userDirection !== 'auto') return userDirection;
       const signed = shifts.reduce((acc, s) => acc + s, 0);
-      return signed >= 0 ? 'ltr' : 'rtl';
+      return signed >= 0 ? 'rtl' : 'ltr';
     }
 
     function computeAutoParams(vw, absShifts, fallbackStripPct, fallbackMaxShift, autoTuneEnabled) {
@@ -631,7 +637,7 @@
           const score = estimateShiftByNCC(firstPassFrames[i - 1].profile, firstPassFrames[i].profile, maxShift);
           const clampedShift = enforceDirection(score.shift, direction);
           const chosenShift = Math.abs(baseShift) > 0 ? baseShift : clampedShift;
-          cumulativeX += chosenShift;
+          cumulativeX -= chosenShift;
 
           const confidence = clamp((score.score + 1) / 2, 0.05, 1);
           framePackets.push({

@@ -1,1 +1,818 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Video to Panorama (Local)</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1115;
+      --card: #191d26;
+      --text: #f3f5f7;
+      --muted: #a9b1bb;
+      --accent: #69a7ff;
+      --ok: #64d392;
+      --warn: #ffc65e;
+      --err: #ff7a7a;
+      --border: #2a313f;
+    }
 
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f6f8fb;
+        --card: #ffffff;
+        --text: #101318;
+        --muted: #5b6572;
+        --accent: #2c6ff0;
+        --ok: #1f8f4f;
+        --warn: #9a6a00;
+        --err: #b42318;
+        --border: #dde3ea;
+      }
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 1.5rem;
+    }
+
+    .muted {
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+
+    input[type="number"],
+    input[type="text"],
+    input[type="file"],
+    button,
+    select {
+      font: inherit;
+      color: inherit;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+    }
+
+    .hint {
+      margin-top: 4px;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    button {
+      background: var(--accent);
+      color: white;
+      border-color: transparent;
+      cursor: pointer;
+      font-weight: 600;
+      transition: transform .05s ease, opacity .2s;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    button:active {
+      transform: translateY(1px);
+    }
+
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-top: 12px;
+    }
+
+    progress {
+      width: min(420px, 100%);
+      height: 14px;
+    }
+
+    .status-ok { color: var(--ok); }
+    .status-warn { color: var(--warn); }
+    .status-err { color: var(--err); }
+
+    .preview-wrap {
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: repeating-conic-gradient(#0000 0% 25%, #0001 0% 50%) 50% / 16px 16px;
+      max-height: 60vh;
+    }
+
+    #previewCanvas {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 8px 12px;
+      margin-top: 8px;
+      font-size: 0.95rem;
+    }
+
+    code {
+      background: #0002;
+      border: 1px solid var(--border);
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <section class="card">
+      <h1>Local Video ➜ Panorama Generator</h1>
+      <p class="muted">
+        Upload an MP4 with mostly horizontal camera motion. The app estimates motion automatically, lets you lock
+        travel direction, and applies stronger seam blending + anti-ghosting so it works well without delicate tuning.
+      </p>
+
+      <div class="controls">
+        <label>
+          Video file (MP4)
+          <input id="videoInput" type="file" accept="video/mp4,video/*" />
+        </label>
+
+        <label>
+          Frames per second to sample
+          <input id="sampleFps" type="number" min="0.5" max="30" step="0.5" value="6" />
+        </label>
+
+        <label>
+          Camera travel direction
+          <select id="directionMode">
+            <option value="auto" selected>Auto detect</option>
+            <option value="ltr">Left ➜ Right</option>
+            <option value="rtl">Right ➜ Left</option>
+          </select>
+        </label>
+
+        <label>
+          Auto tune shifts & strip width
+          <select id="autoTune">
+            <option value="on" selected>On (recommended)</option>
+            <option value="off">Off (manual controls)</option>
+          </select>
+        </label>
+
+        <label>
+          Max expected shift/frame (pixels)
+          <input id="maxShift" type="number" min="10" max="800" step="10" value="240" />
+          <div class="hint">Used only when auto tune is off.</div>
+        </label>
+
+        <label>
+          Strip width (% of frame width)
+          <input id="stripPct" type="number" min="2" max="35" step="1" value="10" />
+          <div class="hint">Used only when auto tune is off.</div>
+        </label>
+
+        <label>
+          Blend strength
+          <input id="blendStrength" type="number" min="10" max="100" step="5" value="60" />
+          <div class="hint">Higher = wider/adaptive seam feathering.</div>
+        </label>
+
+        <label>
+          Anti-ghosting strength
+          <input id="antiGhost" type="number" min="0" max="100" step="5" value="55" />
+          <div class="hint">Higher = adaptive outlier rejection + ghost suppression.</div>
+        </label>
+      </div>
+
+      <div class="row">
+        <button id="buildBtn" disabled>Build Panorama</button>
+        <button id="downloadBtn" disabled>Download PNG</button>
+        <progress id="progress" max="100" value="0"></progress>
+        <span id="status" class="muted">Load an MP4 to begin.</span>
+      </div>
+
+      <div class="kv" id="stats"></div>
+    </section>
+
+    <section class="card">
+      <strong>Panorama Preview</strong>
+      <div class="preview-wrap" style="margin-top: 10px;">
+        <canvas id="previewCanvas"></canvas>
+      </div>
+    </section>
+  </main>
+
+  <video id="workVideo" preload="metadata" style="display:none"></video>
+  <canvas id="workCanvas" style="display:none"></canvas>
+
+  <script>
+    const videoInput = document.getElementById('videoInput');
+    const sampleFpsInput = document.getElementById('sampleFps');
+    const maxShiftInput = document.getElementById('maxShift');
+    const stripPctInput = document.getElementById('stripPct');
+    const directionModeInput = document.getElementById('directionMode');
+    const autoTuneInput = document.getElementById('autoTune');
+    const blendStrengthInput = document.getElementById('blendStrength');
+    const antiGhostInput = document.getElementById('antiGhost');
+    const buildBtn = document.getElementById('buildBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const statusEl = document.getElementById('status');
+    const progressEl = document.getElementById('progress');
+    const statsEl = document.getElementById('stats');
+    const previewCanvas = document.getElementById('previewCanvas');
+    const previewCtx = previewCanvas.getContext('2d');
+
+    const workVideo = document.getElementById('workVideo');
+    const workCanvas = document.getElementById('workCanvas');
+    const workCtx = workCanvas.getContext('2d', { willReadFrequently: true });
+
+    let loadedFile = null;
+    let loadedUrl = null;
+    let latestPanoramaBlob = null;
+    let buildToken = 0;
+
+    function setStatus(text, kind = 'muted') {
+      statusEl.textContent = text;
+      statusEl.className = kind === 'ok' ? 'status-ok' : kind === 'warn' ? 'status-warn' : kind === 'err' ? 'status-err' : 'muted';
+    }
+
+    function setStats(entries) {
+      statsEl.innerHTML = '';
+      for (const [k, v] of entries) {
+        const kEl = document.createElement('div');
+        kEl.style.color = 'var(--muted)';
+        kEl.textContent = k;
+        const vEl = document.createElement('div');
+        vEl.innerHTML = v;
+        statsEl.append(kEl, vEl);
+      }
+    }
+
+    function waitForEvent(target, eventName, timeoutMs = 15000) {
+      return new Promise((resolve, reject) => {
+        const onOk = () => done(resolve);
+        const onErr = () => done(() => reject(new Error(`Failed while waiting for ${eventName}`)));
+        const timer = setTimeout(() => done(() => reject(new Error(`Timeout waiting for ${eventName}`))), timeoutMs);
+
+        function done(fn) {
+          clearTimeout(timer);
+          target.removeEventListener(eventName, onOk);
+          target.removeEventListener('error', onErr);
+          fn();
+        }
+
+        target.addEventListener(eventName, onOk, { once: true });
+        target.addEventListener('error', onErr, { once: true });
+      });
+    }
+
+    async function seekVideo(video, time, token) {
+      if (token !== buildToken) throw new Error('Canceled');
+      const t = Math.max(0, Math.min(time, Math.max(0, video.duration - 1e-4)));
+      const p = waitForEvent(video, 'seeked', 20000);
+      video.currentTime = t;
+      await p;
+    }
+
+    function computeGradientProjection(gray, width, y0, y1) {
+      const out = new Float32Array(width);
+      for (let y = y0; y < y1; y++) {
+        const row = y * width;
+        for (let x = 1; x < width; x++) {
+          const i = row + x;
+          out[x] += Math.abs(gray[i] - gray[i - 1]);
+        }
+      }
+      return out;
+    }
+
+    function computeVerticalGradientProjection(gray, width, height, x0, x1) {
+      const out = new Float32Array(height);
+      for (let y = 1; y < height; y++) {
+        const row = y * width;
+        const prevRow = (y - 1) * width;
+        for (let x = x0; x < x1; x++) {
+          out[y] += Math.abs(gray[row + x] - gray[prevRow + x]);
+        }
+      }
+      return out;
+    }
+
+    function estimateShiftByNCC(profileA, profileB, maxShift) {
+      const n = profileA.length;
+      let bestShift = 0;
+      let bestScore = -Infinity;
+      const clippedMax = Math.min(maxShift, n - 4);
+
+      for (let s = -clippedMax; s <= clippedMax; s++) {
+        const startA = Math.max(0, -s);
+        const startB = Math.max(0, s);
+        const len = n - Math.abs(s);
+        if (len < 20) continue;
+
+        let sumA = 0;
+        let sumB = 0;
+        for (let i = 0; i < len; i++) {
+          sumA += profileA[startA + i];
+          sumB += profileB[startB + i];
+        }
+        const meanA = sumA / len;
+        const meanB = sumB / len;
+
+        let num = 0;
+        let denA = 0;
+        let denB = 0;
+        for (let i = 0; i < len; i++) {
+          const da = profileA[startA + i] - meanA;
+          const db = profileB[startB + i] - meanB;
+          num += da * db;
+          denA += da * da;
+          denB += db * db;
+        }
+
+        const score = num / (Math.sqrt(denA * denB) + 1e-9);
+        if (score > bestScore) {
+          bestScore = score;
+          bestShift = s;
+        }
+      }
+
+      return { shift: bestShift, score: bestScore };
+    }
+
+    function rgbaToGray(rgba) {
+      const gray = new Uint8ClampedArray(rgba.length / 4);
+      for (let i = 0, j = 0; i < rgba.length; i += 4, j++) {
+        gray[j] = (0.2126 * rgba[i] + 0.7152 * rgba[i + 1] + 0.0722 * rgba[i + 2]) | 0;
+      }
+      return gray;
+    }
+
+    function clamp(val, lo, hi) {
+      return Math.max(lo, Math.min(hi, val));
+    }
+
+    function median(values) {
+      if (!values.length) return 0;
+      const arr = [...values].sort((a, b) => a - b);
+      const mid = Math.floor(arr.length / 2);
+      return arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2;
+    }
+
+    function expectedShiftSign(directionMode) {
+      if (directionMode === 'ltr') return -1;
+      if (directionMode === 'rtl') return 1;
+      return 0;
+    }
+
+    function enforceDirection(shift, directionMode) {
+      if (directionMode === 'auto') return shift;
+      const sign = expectedShiftSign(directionMode);
+      if (Math.sign(shift) !== sign) return 0;
+      return shift;
+    }
+
+    function smoothShifts(rawShifts) {
+      if (rawShifts.length < 3) return rawShifts;
+      const out = [rawShifts[0]];
+      for (let i = 1; i < rawShifts.length - 1; i++) {
+        out.push(median([rawShifts[i - 1], rawShifts[i], rawShifts[i + 1]]));
+      }
+      out.push(rawShifts[rawShifts.length - 1]);
+      return out;
+    }
+
+    function resolveDirectionMode(userDirection, shifts) {
+      if (userDirection !== 'auto') return userDirection;
+      const signed = shifts.reduce((acc, s) => acc + s, 0);
+      return signed >= 0 ? 'rtl' : 'ltr';
+    }
+
+    function computeAutoParams(vw, absShifts, fallbackStripPct, fallbackMaxShift, autoTuneEnabled) {
+      if (!autoTuneEnabled || absShifts.length < 2) {
+        return {
+          maxShift: fallbackMaxShift,
+          stripW: Math.max(4, Math.round(vw * fallbackStripPct)),
+          mode: 'manual'
+        };
+      }
+
+      const p50 = median(absShifts);
+      const p80 = median(absShifts.filter(v => v >= p50));
+      const tunedShift = Math.floor(clamp(Math.max(p80 * 2.2, vw * 0.08), 16, vw * 0.45));
+      const tunedStrip = Math.round(clamp(Math.max(p50 * 1.4, vw * 0.06), vw * 0.04, vw * 0.28));
+
+      return {
+        maxShift: tunedShift,
+        stripW: Math.max(4, tunedStrip),
+        mode: 'auto'
+      };
+    }
+
+    function weightedCopyStripAntiGhost(srcData, srcW, srcH, accum, srcX, stripW, dstX, dstY, blendStrength, antiGhostStrength, frameConfidence) {
+      const blendN = blendStrength / 100;
+      const antiN = antiGhostStrength / 100;
+      const fade = Math.max(1, Math.floor(stripW * (0.08 + 0.42 * blendN)));
+      const ghostBaseThreshold = 6 + (1 - antiN) * 40;
+
+      for (let y = 0; y < srcH; y++) {
+        const dy = dstY + y;
+        if (dy < 0 || dy >= accum.height) continue;
+        for (let k = 0; k < stripW; k++) {
+          const sx = srcX + k;
+          const dx = dstX + k;
+          if (sx < 0 || sx >= srcW || dx < 0 || dx >= accum.width) continue;
+
+          let seamW = 1;
+          if (k < fade) seamW *= k / fade;
+          if (k >= stripW - fade) seamW *= (stripW - 1 - k) / fade;
+          seamW = clamp(seamW, 0.08, 1);
+
+          const sIdx = (y * srcW + sx) * 4;
+          const pIdx = (dy * accum.width + dx);
+
+          const r = srcData[sIdx];
+          const g = srcData[sIdx + 1];
+          const b = srcData[sIdx + 2];
+          const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+          const existingW = accum.weight[pIdx];
+          let gate = 1;
+
+          if (existingW > 0 && antiGhostStrength > 0) {
+            const meanR = accum.r[pIdx] / existingW;
+            const meanG = accum.g[pIdx] / existingW;
+            const meanB = accum.b[pIdx] / existingW;
+            const meanLum = accum.lum[pIdx] / existingW;
+            const varLum = Math.max(0, accum.lum2[pIdx] / existingW - meanLum * meanLum);
+            const lumStd = Math.sqrt(varLum);
+
+            const lumDelta = Math.abs(lum - meanLum);
+            const colorDelta = Math.sqrt(
+              (r - meanR) * (r - meanR) +
+              (g - meanG) * (g - meanG) +
+              (b - meanB) * (b - meanB)
+            ) / 1.732;
+            const compositeDelta = 0.55 * lumDelta + 0.45 * colorDelta;
+
+            const adaptiveThreshold = ghostBaseThreshold + lumStd * 1.25 + (1 - frameConfidence) * 18;
+
+            if (compositeDelta > adaptiveThreshold) {
+              const over = (compositeDelta - adaptiveThreshold) / (255 - adaptiveThreshold + 1e-6);
+              const suppress = over * (0.35 + 0.65 * antiN);
+              gate *= (1 - suppress);
+            } else if (compositeDelta < adaptiveThreshold * 0.5) {
+              gate *= 1 + 0.15 * antiN;
+            }
+
+            if (antiN > 0.85 && compositeDelta > adaptiveThreshold * 2.2) {
+              gate = Math.min(gate, 0.015);
+            }
+          }
+
+          const w = seamW * frameConfidence * clamp(gate, 0.005, 1.15);
+          accum.r[pIdx] += r * w;
+          accum.g[pIdx] += g * w;
+          accum.b[pIdx] += b * w;
+          accum.lum[pIdx] += lum * w;
+          accum.lum2[pIdx] += lum * lum * w;
+          accum.weight[pIdx] += w;
+        }
+      }
+    }
+
+    function renderAccumulationToImageData(accum, outImageData) {
+      const dst = outImageData.data;
+      const totalPx = accum.width * accum.height;
+      for (let i = 0; i < totalPx; i++) {
+        const d = i * 4;
+        const w = accum.weight[i];
+        if (w <= 1e-6) {
+          dst[d] = 0;
+          dst[d + 1] = 0;
+          dst[d + 2] = 0;
+          dst[d + 3] = 255;
+          continue;
+        }
+        dst[d] = clamp(accum.r[i] / w, 0, 255);
+        dst[d + 1] = clamp(accum.g[i] / w, 0, 255);
+        dst[d + 2] = clamp(accum.b[i] / w, 0, 255);
+        dst[d + 3] = 255;
+      }
+    }
+
+    videoInput.addEventListener('change', async () => {
+      downloadBtn.disabled = true;
+      buildBtn.disabled = true;
+      latestPanoramaBlob = null;
+      setStats([]);
+      progressEl.value = 0;
+
+      const file = videoInput.files?.[0];
+      if (!file) {
+        setStatus('Load an MP4 to begin.');
+        loadedFile = null;
+        if (loadedUrl) URL.revokeObjectURL(loadedUrl);
+        loadedUrl = null;
+        return;
+      }
+
+      if (loadedUrl) URL.revokeObjectURL(loadedUrl);
+      loadedUrl = URL.createObjectURL(file);
+      loadedFile = file;
+
+      try {
+        workVideo.src = loadedUrl;
+        await waitForEvent(workVideo, 'loadedmetadata', 15000);
+
+        const w = workVideo.videoWidth;
+        const h = workVideo.videoHeight;
+        const d = workVideo.duration;
+
+        if (!Number.isFinite(d) || d <= 0 || w < 64 || h < 64) {
+          throw new Error('Unsupported or corrupted video file.');
+        }
+
+        setStatus('Video loaded. Ready to build panorama.', 'ok');
+        setStats([
+          ['File', `<code>${file.name}</code>`],
+          ['Resolution', `${w} × ${h}`],
+          ['Duration', `${d.toFixed(2)} s`],
+          ['Size', `${(file.size / (1024 * 1024)).toFixed(2)} MB`]
+        ]);
+        buildBtn.disabled = false;
+      } catch (err) {
+        setStatus(`Could not load video: ${err.message}`, 'err');
+        loadedFile = null;
+      }
+    });
+
+    buildBtn.addEventListener('click', async () => {
+      if (!loadedFile) return;
+      buildToken++;
+      const token = buildToken;
+
+      buildBtn.disabled = true;
+      downloadBtn.disabled = true;
+      progressEl.value = 0;
+
+      try {
+        setStatus('Preparing frame sampling...');
+
+        const sampleFps = clamp(Number(sampleFpsInput.value) || 6, 0.5, 30);
+        const manualMaxShift = Math.floor(clamp(Number(maxShiftInput.value) || 240, 10, 800));
+        const manualStripPct = clamp(Number(stripPctInput.value) || 10, 2, 35) / 100;
+        const blendStrength = clamp(Number(blendStrengthInput.value) || 60, 10, 100);
+        const antiGhostStrength = clamp(Number(antiGhostInput.value) || 55, 0, 100);
+        const userDirection = directionModeInput.value;
+        const autoTuneEnabled = autoTuneInput.value === 'on';
+
+        const vw = workVideo.videoWidth;
+        const vh = workVideo.videoHeight;
+        const duration = workVideo.duration;
+        workCanvas.width = vw;
+        workCanvas.height = vh;
+
+        const dt = 1 / sampleFps;
+        const times = [];
+        for (let t = 0; t <= duration; t += dt) times.push(t);
+        if (times[times.length - 1] < duration - dt * 0.6) times.push(duration);
+        if (times.length < 2) throw new Error('Video too short for panorama generation.');
+
+        const bandTop = Math.floor(vh * 0.25);
+        const bandBottom = Math.floor(vh * 0.75);
+        const colLeft = Math.floor(vw * 0.25);
+        const colRight = Math.floor(vw * 0.75);
+
+        const firstPassFrames = [];
+        let prevProfileX = null;
+        let prevProfileY = null;
+        const firstPassShiftsX = [];
+        const firstPassShiftsY = [];
+
+        const coarseMaxShiftX = Math.floor(clamp(vw * 0.35, 16, 900));
+        const coarseMaxShiftY = Math.floor(clamp(vh * 0.22, 8, 320));
+
+        for (let i = 0; i < times.length; i++) {
+          if (token !== buildToken) throw new Error('Canceled');
+          await seekVideo(workVideo, times[i], token);
+          workCtx.drawImage(workVideo, 0, 0, vw, vh);
+          const img = workCtx.getImageData(0, 0, vw, vh);
+          const gray = rgbaToGray(img.data);
+          const profileX = computeGradientProjection(gray, vw, bandTop, bandBottom);
+          const profileY = computeVerticalGradientProjection(gray, vw, vh, colLeft, colRight);
+
+          let confidence = 1;
+          let shiftX = 0;
+          let shiftY = 0;
+          if (prevProfileX && prevProfileY) {
+            const estimateX = estimateShiftByNCC(prevProfileX, profileX, coarseMaxShiftX);
+            const estimateY = estimateShiftByNCC(prevProfileY, profileY, coarseMaxShiftY);
+            shiftX = estimateX.shift;
+            shiftY = estimateY.shift;
+            confidence = clamp(((estimateX.score + estimateY.score) * 0.5 + 1) / 2, 0, 1);
+            firstPassShiftsX.push(shiftX);
+            firstPassShiftsY.push(shiftY);
+          }
+
+          firstPassFrames.push({
+            rgba: new Uint8ClampedArray(img.data),
+            t: times[i],
+            profileX,
+            profileY,
+            shiftX,
+            shiftY,
+            confidence
+          });
+
+          prevProfileX = profileX;
+          prevProfileY = profileY;
+          progressEl.value = (i + 1) / times.length * 35;
+          setStatus(`Analyzing motion... frame ${i + 1}/${times.length}`);
+        }
+
+        const direction = resolveDirectionMode(userDirection, firstPassShiftsX);
+        const directionalShiftsX = firstPassShiftsX.map(s => enforceDirection(s, direction));
+        const filteredShiftsX = smoothShifts(directionalShiftsX);
+        const filteredShiftsY = smoothShifts(firstPassShiftsY);
+        const absShifts = filteredShiftsX.map(s => Math.abs(s));
+
+        const tuned = computeAutoParams(vw, absShifts, manualStripPct, manualMaxShift, autoTuneEnabled);
+        const maxShiftX = tuned.maxShift;
+        const maxShiftY = Math.floor(clamp(vh * 0.26, 10, 380));
+        const stripW = tuned.stripW;
+        const sourceX = Math.floor((vw - stripW) / 2);
+
+        const framePackets = [];
+        let cumulativeX = 0;
+        let cumulativeY = 0;
+        framePackets.push({ rgba: firstPassFrames[0].rgba, x: 0, y: 0, t: firstPassFrames[0].t, confidence: 1 });
+
+        for (let i = 1; i < firstPassFrames.length; i++) {
+          const baseShiftX = filteredShiftsX[i - 1];
+          const baseShiftY = filteredShiftsY[i - 1] || 0;
+          const scoreX = estimateShiftByNCC(firstPassFrames[i - 1].profileX, firstPassFrames[i].profileX, maxShiftX);
+          const scoreY = estimateShiftByNCC(firstPassFrames[i - 1].profileY, firstPassFrames[i].profileY, maxShiftY);
+          const clampedShiftX = enforceDirection(scoreX.shift, direction);
+          const chosenShiftX = Math.abs(baseShiftX) > 0 ? baseShiftX : clampedShiftX;
+          const chosenShiftY = Math.abs(baseShiftY) > 0 ? baseShiftY : scoreY.shift;
+          cumulativeX -= chosenShiftX;
+          cumulativeY -= chosenShiftY;
+
+          const confidence = clamp(((scoreX.score + scoreY.score) * 0.5 + 1) / 2, 0.05, 1);
+          framePackets.push({
+            rgba: firstPassFrames[i].rgba,
+            x: cumulativeX,
+            y: cumulativeY,
+            t: firstPassFrames[i].t,
+            confidence
+          });
+
+          progressEl.value = 35 + (i / (firstPassFrames.length - 1)) * 20;
+          setStatus(`Refining shifts... frame ${i + 1}/${firstPassFrames.length}`);
+        }
+
+        const xs = framePackets.map(f => f.x);
+        const ys = framePackets.map(f => f.y);
+        const minStripX = Math.min(...xs);
+        const maxStripX = Math.max(...xs) + stripW;
+        const minFrameY = Math.min(...ys);
+        const maxFrameY = Math.max(...ys) + vh;
+
+        // Use only stitched-coverage bounds in X to avoid empty black side columns.
+        const panoLeftX = minStripX;
+        const panoRightX = maxStripX;
+        const panoTopY = Math.floor(minFrameY);
+        const panoBottomY = Math.ceil(maxFrameY);
+
+        const panoW = Math.max(16, Math.ceil((panoRightX - panoLeftX) + 4));
+        const panoH = Math.max(16, Math.ceil((panoBottomY - panoTopY) + 4));
+
+        const accum = {
+          width: panoW,
+          height: panoH,
+          r: new Float32Array(panoW * panoH),
+          g: new Float32Array(panoW * panoH),
+          b: new Float32Array(panoW * panoH),
+          lum: new Float32Array(panoW * panoH),
+          lum2: new Float32Array(panoW * panoH),
+          weight: new Float32Array(panoW * panoH)
+        };
+
+        for (let i = 0; i < framePackets.length; i++) {
+          if (token !== buildToken) throw new Error('Canceled');
+          const p = framePackets[i];
+          const dstX = Math.round(p.x - panoLeftX);
+          const dstY = Math.round(p.y - panoTopY);
+          weightedCopyStripAntiGhost(
+            p.rgba,
+            vw,
+            vh,
+            accum,
+            sourceX,
+            stripW,
+            dstX,
+            dstY,
+            blendStrength,
+            antiGhostStrength,
+            p.confidence
+          );
+
+          progressEl.value = 55 + ((i + 1) / framePackets.length * 45);
+          setStatus(`Blending panorama... frame ${i + 1}/${framePackets.length}`);
+        }
+
+        const pano = new ImageData(panoW, panoH);
+        renderAccumulationToImageData(accum, pano);
+
+        previewCanvas.width = panoW;
+        previewCanvas.height = panoH;
+        previewCtx.putImageData(pano, 0, 0);
+
+        latestPanoramaBlob = await new Promise(resolve => previewCanvas.toBlob(resolve, 'image/png'));
+        if (!latestPanoramaBlob) throw new Error('Failed to encode panorama PNG.');
+
+        const nonZero = filteredShiftsX.filter(v => Math.abs(v) > 0.1);
+        const shiftAbsAvg = nonZero.reduce((a, b) => a + Math.abs(b), 0) / Math.max(1, nonZero.length);
+        const verticalShiftAbsAvg = filteredShiftsY.reduce((a, b) => a + Math.abs(b), 0) / Math.max(1, filteredShiftsY.length);
+
+        setStats([
+          ['Input file', `<code>${loadedFile.name}</code>`],
+          ['Input resolution', `${vw} × ${vh}`],
+          ['Sampled frames', `${framePackets.length} (@ ${sampleFps.toFixed(1)} fps)`],
+          ['Direction mode', `${userDirection === 'auto' ? `Auto (${direction === 'ltr' ? 'Left ➜ Right' : 'Right ➜ Left'})` : (direction === 'ltr' ? 'Left ➜ Right' : 'Right ➜ Left')}`],
+          ['Tuning mode', tuned.mode === 'auto' ? 'Auto' : 'Manual'],
+          ['Max horizontal shift / frame', `${maxShiftX}px`],
+          ['Strip width', `${stripW}px`],
+          ['Average horizontal shift / frame', `${shiftAbsAvg.toFixed(2)} px`],
+          ['Average vertical shift / frame', `${verticalShiftAbsAvg.toFixed(2)} px`],
+          ['Panorama resolution', `<strong>${panoW} × ${panoH}</strong>`],
+          ['PNG size', `${(latestPanoramaBlob.size / (1024 * 1024)).toFixed(2)} MB`]
+        ]);
+
+        setStatus('Panorama ready. You can download the full-resolution PNG.', 'ok');
+        downloadBtn.disabled = false;
+      } catch (err) {
+        setStatus(`Build failed: ${err.message}`, 'err');
+      } finally {
+        if (token === buildToken) buildBtn.disabled = false;
+      }
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      if (!latestPanoramaBlob) return;
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      a.href = URL.createObjectURL(latestPanoramaBlob);
+      a.download = `panorama-${stamp}.png`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(a.href);
+        a.remove();
+      }, 1000);
+    });
+  </script>
+</body>
+</html>

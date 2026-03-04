@@ -1,1 +1,539 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Video to Panorama (Local)</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1115;
+      --card: #191d26;
+      --text: #f3f5f7;
+      --muted: #a9b1bb;
+      --accent: #69a7ff;
+      --ok: #64d392;
+      --warn: #ffc65e;
+      --err: #ff7a7a;
+      --border: #2a313f;
+    }
 
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f6f8fb;
+        --card: #ffffff;
+        --text: #101318;
+        --muted: #5b6572;
+        --accent: #2c6ff0;
+        --ok: #1f8f4f;
+        --warn: #9a6a00;
+        --err: #b42318;
+        --border: #dde3ea;
+      }
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 1.5rem;
+    }
+
+    .muted {
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+
+    input[type="number"],
+    input[type="text"],
+    input[type="file"],
+    button,
+    select {
+      font: inherit;
+      color: inherit;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+    }
+
+    button {
+      background: var(--accent);
+      color: white;
+      border-color: transparent;
+      cursor: pointer;
+      font-weight: 600;
+      transition: transform .05s ease, opacity .2s;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    button:active {
+      transform: translateY(1px);
+    }
+
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-top: 12px;
+    }
+
+    progress {
+      width: min(420px, 100%);
+      height: 14px;
+    }
+
+    .status-ok { color: var(--ok); }
+    .status-warn { color: var(--warn); }
+    .status-err { color: var(--err); }
+
+    .preview-wrap {
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: repeating-conic-gradient(#0000 0% 25%, #0001 0% 50%) 50% / 16px 16px;
+      max-height: 60vh;
+    }
+
+    #previewCanvas {
+      display: block;
+      max-width: none;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 8px 12px;
+      margin-top: 8px;
+      font-size: 0.95rem;
+    }
+
+    code {
+      background: #0002;
+      border: 1px solid var(--border);
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <section class="card">
+      <h1>Local Video ➜ Panorama Generator</h1>
+      <p class="muted">
+        Upload an MP4 with mostly horizontal camera pan. This tool samples frames, estimates horizontal motion with
+        normalized cross-correlation, and stitches adaptive center strips into a single panorama you can download.
+      </p>
+
+      <div class="controls">
+        <label>
+          Video file (MP4)
+          <input id="videoInput" type="file" accept="video/mp4,video/*" />
+        </label>
+
+        <label>
+          Frames per second to sample
+          <input id="sampleFps" type="number" min="0.5" max="30" step="0.5" value="6" />
+        </label>
+
+        <label>
+          Max expected shift/frame (pixels)
+          <input id="maxShift" type="number" min="10" max="800" step="10" value="240" />
+        </label>
+
+        <label>
+          Strip width (% of frame width)
+          <input id="stripPct" type="number" min="2" max="35" step="1" value="10" />
+        </label>
+      </div>
+
+      <div class="row">
+        <button id="buildBtn" disabled>Build Panorama</button>
+        <button id="downloadBtn" disabled>Download PNG</button>
+        <progress id="progress" max="100" value="0"></progress>
+        <span id="status" class="muted">Load an MP4 to begin.</span>
+      </div>
+
+      <div class="kv" id="stats"></div>
+    </section>
+
+    <section class="card">
+      <strong>Panorama Preview</strong>
+      <div class="preview-wrap" style="margin-top: 10px;">
+        <canvas id="previewCanvas"></canvas>
+      </div>
+    </section>
+  </main>
+
+  <video id="workVideo" preload="metadata" style="display:none"></video>
+  <canvas id="workCanvas" style="display:none"></canvas>
+
+  <script>
+    const videoInput = document.getElementById('videoInput');
+    const sampleFpsInput = document.getElementById('sampleFps');
+    const maxShiftInput = document.getElementById('maxShift');
+    const stripPctInput = document.getElementById('stripPct');
+    const buildBtn = document.getElementById('buildBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const statusEl = document.getElementById('status');
+    const progressEl = document.getElementById('progress');
+    const statsEl = document.getElementById('stats');
+    const previewCanvas = document.getElementById('previewCanvas');
+    const previewCtx = previewCanvas.getContext('2d');
+
+    const workVideo = document.getElementById('workVideo');
+    const workCanvas = document.getElementById('workCanvas');
+    const workCtx = workCanvas.getContext('2d', { willReadFrequently: true });
+
+    let loadedFile = null;
+    let loadedUrl = null;
+    let latestPanoramaBlob = null;
+    let buildToken = 0;
+
+    function setStatus(text, kind = 'muted') {
+      statusEl.textContent = text;
+      statusEl.className = kind === 'ok' ? 'status-ok' : kind === 'warn' ? 'status-warn' : kind === 'err' ? 'status-err' : 'muted';
+    }
+
+    function setStats(entries) {
+      statsEl.innerHTML = '';
+      for (const [k, v] of entries) {
+        const kEl = document.createElement('div');
+        kEl.style.color = 'var(--muted)';
+        kEl.textContent = k;
+        const vEl = document.createElement('div');
+        vEl.innerHTML = v;
+        statsEl.append(kEl, vEl);
+      }
+    }
+
+    function waitForEvent(target, eventName, timeoutMs = 15000) {
+      return new Promise((resolve, reject) => {
+        const onOk = () => done(resolve);
+        const onErr = () => done(() => reject(new Error(`Failed while waiting for ${eventName}`)));
+        const timer = setTimeout(() => done(() => reject(new Error(`Timeout waiting for ${eventName}`))), timeoutMs);
+
+        function done(fn) {
+          clearTimeout(timer);
+          target.removeEventListener(eventName, onOk);
+          target.removeEventListener('error', onErr);
+          fn();
+        }
+
+        target.addEventListener(eventName, onOk, { once: true });
+        target.addEventListener('error', onErr, { once: true });
+      });
+    }
+
+    async function seekVideo(video, time, token) {
+      if (token !== buildToken) throw new Error('Canceled');
+      const t = Math.max(0, Math.min(time, Math.max(0, video.duration - 1e-4)));
+      const p = waitForEvent(video, 'seeked', 20000);
+      video.currentTime = t;
+      await p;
+    }
+
+    function computeGradientProjection(gray, width, height, y0, y1) {
+      const out = new Float32Array(width);
+      for (let y = y0; y < y1; y++) {
+        const row = y * width;
+        for (let x = 1; x < width; x++) {
+          const i = row + x;
+          out[x] += Math.abs(gray[i] - gray[i - 1]);
+        }
+      }
+      return out;
+    }
+
+    function estimateShiftByNCC(profileA, profileB, maxShift) {
+      const n = profileA.length;
+      let bestShift = 0;
+      let bestScore = -Infinity;
+
+      const clippedMax = Math.min(maxShift, n - 4);
+
+      for (let s = -clippedMax; s <= clippedMax; s++) {
+        const startA = Math.max(0, -s);
+        const startB = Math.max(0, s);
+        const len = n - Math.abs(s);
+        if (len < 20) continue;
+
+        let sumA = 0, sumB = 0;
+        for (let i = 0; i < len; i++) {
+          sumA += profileA[startA + i];
+          sumB += profileB[startB + i];
+        }
+        const meanA = sumA / len;
+        const meanB = sumB / len;
+
+        let num = 0, denA = 0, denB = 0;
+        for (let i = 0; i < len; i++) {
+          const da = profileA[startA + i] - meanA;
+          const db = profileB[startB + i] - meanB;
+          num += da * db;
+          denA += da * da;
+          denB += db * db;
+        }
+
+        const score = num / (Math.sqrt(denA * denB) + 1e-9);
+        if (score > bestScore) {
+          bestScore = score;
+          bestShift = s;
+        }
+      }
+
+      return { shift: bestShift, score: bestScore };
+    }
+
+    function rgbaToGray(rgba) {
+      const gray = new Uint8ClampedArray(rgba.length / 4);
+      for (let i = 0, j = 0; i < rgba.length; i += 4, j++) {
+        gray[j] = (0.2126 * rgba[i] + 0.7152 * rgba[i + 1] + 0.0722 * rgba[i + 2]) | 0;
+      }
+      return gray;
+    }
+
+    function clamp(val, lo, hi) {
+      return Math.max(lo, Math.min(hi, val));
+    }
+
+    function weightedCopyStrip(srcData, srcW, srcH, dstImageData, dstW, dstH, srcX, stripW, dstX) {
+      const dst = dstImageData.data;
+      const src = srcData;
+      const leftFade = Math.max(1, Math.floor(stripW * 0.2));
+      const rightFade = leftFade;
+
+      for (let y = 0; y < Math.min(srcH, dstH); y++) {
+        for (let k = 0; k < stripW; k++) {
+          const sx = srcX + k;
+          const dx = dstX + k;
+          if (sx < 0 || sx >= srcW || dx < 0 || dx >= dstW) continue;
+
+          let w = 1;
+          if (k < leftFade) w *= k / leftFade;
+          if (k >= stripW - rightFade) w *= (stripW - 1 - k) / rightFade;
+          w = clamp(w, 0.15, 1);
+
+          const sIdx = (y * srcW + sx) * 4;
+          const dIdx = (y * dstW + dx) * 4;
+
+          const a = dst[dIdx + 3] / 255;
+          const aw = a + w;
+
+          dst[dIdx] = ((dst[dIdx] * a) + src[sIdx] * w) / aw;
+          dst[dIdx + 1] = ((dst[dIdx + 1] * a) + src[sIdx + 1] * w) / aw;
+          dst[dIdx + 2] = ((dst[dIdx + 2] * a) + src[sIdx + 2] * w) / aw;
+          dst[dIdx + 3] = clamp(aw * 255, 0, 255);
+        }
+      }
+    }
+
+    videoInput.addEventListener('change', async () => {
+      downloadBtn.disabled = true;
+      buildBtn.disabled = true;
+      latestPanoramaBlob = null;
+      setStats([]);
+      progressEl.value = 0;
+
+      const file = videoInput.files?.[0];
+      if (!file) {
+        setStatus('Load an MP4 to begin.');
+        loadedFile = null;
+        if (loadedUrl) URL.revokeObjectURL(loadedUrl);
+        loadedUrl = null;
+        return;
+      }
+
+      if (loadedUrl) URL.revokeObjectURL(loadedUrl);
+      loadedUrl = URL.createObjectURL(file);
+      loadedFile = file;
+
+      try {
+        workVideo.src = loadedUrl;
+        await waitForEvent(workVideo, 'loadedmetadata', 15000);
+
+        const w = workVideo.videoWidth;
+        const h = workVideo.videoHeight;
+        const d = workVideo.duration;
+
+        if (!Number.isFinite(d) || d <= 0 || w < 64 || h < 64) {
+          throw new Error('Unsupported or corrupted video file.');
+        }
+
+        setStatus('Video loaded. Ready to build panorama.', 'ok');
+        setStats([
+          ['File', `<code>${file.name}</code>`],
+          ['Resolution', `${w} × ${h}`],
+          ['Duration', `${d.toFixed(2)} s`],
+          ['Size', `${(file.size / (1024 * 1024)).toFixed(2)} MB`]
+        ]);
+        buildBtn.disabled = false;
+      } catch (err) {
+        setStatus(`Could not load video: ${err.message}`, 'err');
+        loadedFile = null;
+      }
+    });
+
+    buildBtn.addEventListener('click', async () => {
+      if (!loadedFile) return;
+      buildToken++;
+      const token = buildToken;
+
+      buildBtn.disabled = true;
+      downloadBtn.disabled = true;
+      progressEl.value = 0;
+
+      try {
+        setStatus('Preparing frame sampling...');
+
+        const sampleFps = clamp(Number(sampleFpsInput.value) || 6, 0.5, 30);
+        const maxShift = Math.floor(clamp(Number(maxShiftInput.value) || 240, 10, 800));
+        const stripPct = clamp(Number(stripPctInput.value) || 10, 2, 35) / 100;
+
+        const vw = workVideo.videoWidth;
+        const vh = workVideo.videoHeight;
+        const duration = workVideo.duration;
+        workCanvas.width = vw;
+        workCanvas.height = vh;
+
+        const dt = 1 / sampleFps;
+        const times = [];
+        for (let t = 0; t <= duration; t += dt) times.push(t);
+        if (times[times.length - 1] < duration - dt * 0.6) times.push(duration);
+        if (times.length < 2) throw new Error('Video too short for panorama generation.');
+
+        const stripW = Math.max(4, Math.round(vw * stripPct));
+        const sourceX = Math.floor((vw - stripW) / 2);
+
+        let prevProfile = null;
+        let cumulativeX = 0;
+        const framePackets = [];
+        const shifts = [0];
+
+        const bandTop = Math.floor(vh * 0.25);
+        const bandBottom = Math.floor(vh * 0.75);
+
+        for (let i = 0; i < times.length; i++) {
+          if (token !== buildToken) throw new Error('Canceled');
+
+          await seekVideo(workVideo, times[i], token);
+          workCtx.drawImage(workVideo, 0, 0, vw, vh);
+          const img = workCtx.getImageData(0, 0, vw, vh);
+          const gray = rgbaToGray(img.data);
+          const profile = computeGradientProjection(gray, vw, vh, bandTop, bandBottom);
+
+          if (prevProfile) {
+            const { shift } = estimateShiftByNCC(prevProfile, profile, maxShift);
+            cumulativeX += shift;
+            shifts.push(shift);
+          }
+
+          framePackets.push({ rgba: new Uint8ClampedArray(img.data), x: cumulativeX, t: times[i] });
+          prevProfile = profile;
+
+          progressEl.value = (i + 1) / times.length * 50;
+          setStatus(`Analyzing motion... frame ${i + 1}/${times.length}`);
+        }
+
+        const xs = framePackets.map(f => f.x);
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const panoW = Math.ceil((maxX - minX) + stripW + 4);
+        const panoH = vh;
+
+        const pano = new ImageData(panoW, panoH);
+
+        for (let i = 0; i < framePackets.length; i++) {
+          if (token !== buildToken) throw new Error('Canceled');
+          const p = framePackets[i];
+          const dstX = Math.round(p.x - minX);
+          weightedCopyStrip(p.rgba, vw, vh, pano, panoW, panoH, sourceX, stripW, dstX);
+
+          progressEl.value = 50 + ((i + 1) / framePackets.length * 50);
+          setStatus(`Stitching panorama... frame ${i + 1}/${framePackets.length}`);
+        }
+
+        previewCanvas.width = panoW;
+        previewCanvas.height = panoH;
+        previewCtx.putImageData(pano, 0, 0);
+
+        latestPanoramaBlob = await new Promise(resolve => previewCanvas.toBlob(resolve, 'image/png'));
+        if (!latestPanoramaBlob) throw new Error('Failed to encode panorama PNG.');
+
+        const shiftAbsAvg = shifts.slice(1).reduce((a, b) => a + Math.abs(b), 0) / Math.max(1, shifts.length - 1);
+
+        setStats([
+          ['Input file', `<code>${loadedFile.name}</code>`],
+          ['Input resolution', `${vw} × ${vh}`],
+          ['Sampled frames', `${framePackets.length} (@ ${sampleFps.toFixed(1)} fps)`],
+          ['Strip width', `${stripW}px (${(stripPct * 100).toFixed(0)}%)`],
+          ['Average shift / frame', `${shiftAbsAvg.toFixed(2)} px`],
+          ['Panorama resolution', `<strong>${panoW} × ${panoH}</strong>`],
+          ['PNG size', `${(latestPanoramaBlob.size / (1024 * 1024)).toFixed(2)} MB`]
+        ]);
+
+        setStatus('Panorama ready. You can download the full-resolution PNG.', 'ok');
+        downloadBtn.disabled = false;
+      } catch (err) {
+        setStatus(`Build failed: ${err.message}`, 'err');
+      } finally {
+        if (token === buildToken) buildBtn.disabled = false;
+      }
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      if (!latestPanoramaBlob) return;
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      a.href = URL.createObjectURL(latestPanoramaBlob);
+      a.download = `panorama-${stamp}.png`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(a.href);
+        a.remove();
+      }, 1000);
+    });
+  </script>
+</body>
+</html>

@@ -528,6 +528,35 @@
       }
     }
 
+    function stampEndpointFrame(srcData, srcW, srcH, accum, dstFrameX, preferLeft) {
+      const boost = 1.75;
+      for (let y = 0; y < srcH; y++) {
+        for (let x = 0; x < srcW; x++) {
+          const dx = dstFrameX + x;
+          if (dx < 0 || dx >= accum.width) continue;
+
+          const sIdx = (y * srcW + x) * 4;
+          const pIdx = (y * accum.width + dx);
+
+          const r = srcData[sIdx];
+          const g = srcData[sIdx + 1];
+          const b = srcData[sIdx + 2];
+          const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+          const t = x / Math.max(1, srcW - 1);
+          const edgePriority = preferLeft ? (1 - t) : t;
+          const edgeW = clamp(0.08 + edgePriority * edgePriority * boost, 0.08, 2.2);
+
+          accum.r[pIdx] += r * edgeW;
+          accum.g[pIdx] += g * edgeW;
+          accum.b[pIdx] += b * edgeW;
+          accum.lum[pIdx] += lum * edgeW;
+          accum.lum2[pIdx] += lum * lum * edgeW;
+          accum.weight[pIdx] += edgeW;
+        }
+      }
+    }
+
     videoInput.addEventListener('change', async () => {
       downloadBtn.disabled = true;
       buildBtn.disabled = true;
@@ -679,9 +708,16 @@
         }
 
         const xs = framePackets.map(f => f.x);
-        const minX = Math.min(...xs);
-        const maxX = Math.max(...xs);
-        const panoW = Math.max(16, Math.ceil((maxX - minX) + stripW + 4));
+        const minStripX = Math.min(...xs);
+        const maxStripX = Math.max(...xs) + stripW;
+
+        const firstFrameLeftX = framePackets[0].x - sourceX;
+        const lastFrameRightX = framePackets[framePackets.length - 1].x - sourceX + vw;
+
+        const panoLeftX = Math.min(minStripX, firstFrameLeftX);
+        const panoRightX = Math.max(maxStripX, lastFrameRightX);
+
+        const panoW = Math.max(16, Math.ceil((panoRightX - panoLeftX) + 4));
         const panoH = vh;
 
         const accum = {
@@ -698,7 +734,7 @@
         for (let i = 0; i < framePackets.length; i++) {
           if (token !== buildToken) throw new Error('Canceled');
           const p = framePackets[i];
-          const dstX = Math.round(p.x - minX);
+          const dstX = Math.round(p.x - panoLeftX);
           weightedCopyStripAntiGhost(
             p.rgba,
             vw,
@@ -715,6 +751,11 @@
           progressEl.value = 55 + ((i + 1) / framePackets.length * 45);
           setStatus(`Blending panorama... frame ${i + 1}/${framePackets.length}`);
         }
+
+        const firstFrameDstX = Math.round(framePackets[0].x - panoLeftX - sourceX);
+        const lastFrameDstX = Math.round(framePackets[framePackets.length - 1].x - panoLeftX - sourceX);
+        stampEndpointFrame(framePackets[0].rgba, vw, vh, accum, firstFrameDstX, true);
+        stampEndpointFrame(framePackets[framePackets.length - 1].rgba, vw, vh, accum, lastFrameDstX, false);
 
         const pano = new ImageData(panoW, panoH);
         renderAccumulationToImageData(accum, pano);
